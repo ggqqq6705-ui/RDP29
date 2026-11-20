@@ -1,0 +1,95 @@
+
+name: Ubuntu 24.04 + Tailscale + NoMachine
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Install XFCE Desktop
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 xfce4-goodies dbus-x11 curl wget ca-certificates
+
+      - name: Create Desktop Password
+        shell: bash
+        env:
+          LINUX_PASSWORD: ${{ secrets.LINUX_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$LINUX_PASSWORD" ]; then
+            echo "Missing LINUX_PASSWORD secret"
+            exit 1
+          fi
+          echo "runner:$LINUX_PASSWORD" | sudo chpasswd
+
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Install NoMachine Personal Edition
+        shell: bash
+        run: |
+          set -e
+          cd /tmp
+
+          URL="https://download.nomachine.com/download/10.0/Linux/nomachine-personal-edition_10.0.60_1_amd64.deb"
+
+          wget -O nomachine.deb "$URL"
+          test -s nomachine.deb
+
+          echo "0ea825a383ca03338f84c94930836974  nomachine.deb" | md5sum -c -
+
+          sudo dpkg -i nomachine.deb || sudo apt-get install -f -y
+
+          test -x /usr/NX/bin/nxserver
+          sudo /usr/NX/bin/nxserver --startup
+          sudo /usr/NX/bin/nxserver --status
+
+      - name: Install NoMachine License
+        if: ${{ secrets.NOMACHINE_LICENSE_B64 != '' }}
+        shell: bash
+        env:
+          LICENSE_B64: ${{ secrets.NOMACHINE_LICENSE_B64 }}
+        run: |
+          set -e
+          echo "$LICENSE_B64" | base64 -d > /tmp/server.lic
+          sudo /usr/NX/bin/nxserver --subscriptionset /tmp/server.lic
+          sudo rm -f /tmp/server.lic
+          sudo /usr/NX/bin/nxserver --subscriptioninfo
+
+      - name: Configure Firewall
+        shell: bash
+        run: |
+          set -e
+          sudo ufw allow in on tailscale0 to any port 4000 proto tcp || true
+          sudo ufw status || true
+
+      - name: Verify Server
+        shell: bash
+        run: |
+          echo "Ubuntu Desktop Ready"
+          echo "Tailscale IPv4:"
+          tailscale ip -4
+
+          echo "NoMachine status:"
+          sudo /usr/NX/bin/nxserver --status
+
+          echo "Port 4000:"
+          sudo ss -lntp | grep ':4000' || true
+
+      - name: Keep Server Alive
+        shell: bash
+        run: |
+          while true; do
+            echo "Ubuntu + Tailscale + NoMachine running"
+            sleep 240
+          done
